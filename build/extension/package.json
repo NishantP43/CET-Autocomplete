@@ -1,0 +1,75 @@
+{
+  "name": "emacs-tab-complete",
+  "displayName": "Emacs Tab Complete",
+  "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
+  "version": "0.0.4",
+  "publisher": "emacs-local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "emacs",
+    "dabbrev",
+    "hippie-expand",
+    "autocomplete",
+    "completion",
+    "tab"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "emacsTabComplete.expand",
+        "title": "Emacs Tab Complete: Expand / Cycle"
+      },
+      {
+        "command": "emacsTabComplete.listMethods",
+        "title": "Emacs Tab Complete: List Methods Across Workspace…"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "emacsTabComplete.expand",
+        "key": "tab",
+        "when": "editorTextFocus && !editorReadonly && !suggestWidgetVisible && !inSnippetMode && !editorTabMovesFocus && !inlineSuggestionVisible"
+      },
+      {
+        "command": "emacsTabComplete.listMethods",
+        "key": "ctrl+tab",
+        "when": "editorTextFocus && !editorReadonly"
+      }
+    ],
+    "configuration": {
+      "title": "Emacs Tab Complete",
+      "properties": {
+        "emacsTabComplete.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Emacs-style Tab completion."
+        },
+        "emacsTabComplete.wordCharacters": {
+          "type": "string",
+          "default": "A-Za-z0-9_$",
+          "description": "Regex character-class contents defining what counts as a word character (the abbreviation alphabet, like Emacs dabbrev-abbrev-char-regexp)."
+        },
+        "emacsTabComplete.searchAllOpenDocuments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also gather candidates from other open documents (like dabbrev searching across buffers)."
+        },
+        "emacsTabComplete.fallbackToTab": {
+          "type": "boolean",
+          "default": true,
+          "description": "When there is nothing to complete, perform the normal Tab action (indent / insert tab)."
+        }
+      }
+    }
+  }
+}
