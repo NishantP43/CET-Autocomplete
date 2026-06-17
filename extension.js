@@ -17,6 +17,17 @@ const vscode = require('vscode');
 
 const DEFAULT_WORD_CHARS = 'A-Za-z0-9_$';
 
+// Everything in this extension is scoped to CM (.cm) source files only.
+const CM_SELECTOR = [
+  { scheme: 'file', pattern: '**/*.cm' },
+  { scheme: 'untitled', pattern: '**/*.cm' },
+];
+
+/** True when the document is a .cm file (the only files we operate on). */
+function isCmDocument(document) {
+  return !!document && /\.cm$/i.test(document.uri.fsPath || document.fileName || '');
+}
+
 /**
  * Active expansion session, used to cycle through candidates on repeated Tab.
  * @type {null | {
@@ -91,7 +102,7 @@ function collectCandidates(document, cursorOffset, prefix, wordChars, searchAll)
   if (searchAll) {
     for (const doc of vscode.workspace.textDocuments) {
       if (doc === document) continue;
-      if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'untitled') continue;
+      if (!isCmDocument(doc)) continue;
       const re2 = wordRegex(wordChars);
       let mm;
       const t = doc.getText();
@@ -120,6 +131,9 @@ async function expand() {
   const cfg = getConfig();
   const editor = vscode.window.activeTextEditor;
   if (!editor || !cfg.enabled) return fallbackTab(cfg);
+
+  // Only operate on .cm files; elsewhere Tab behaves normally.
+  if (!isCmDocument(editor.document)) return fallbackTab(cfg);
 
   // Only operate on a single, empty selection. Otherwise behave like Tab.
   if (editor.selections.length !== 1 || !editor.selection.isEmpty) {
@@ -300,6 +314,10 @@ async function listMethods() {
     vscode.window.showInformationMessage('Open a file to insert a method into.');
     return;
   }
+  if (!isCmDocument(editor.document)) {
+    vscode.window.showInformationMessage('This command only works in .cm files.');
+    return;
+  }
 
   const seed = seedPrefix(editor);
 
@@ -389,13 +407,433 @@ async function listMethods() {
   await editor.insertSnippet(methodStub(d), seed ? seed.range : undefined);
 }
 
+// ---------------------------------------------------------------------------
+// Dot-triggered member completion  (type "obj."  →  members of obj's class)
+// ---------------------------------------------------------------------------
+
+/** memberCache: Map<className, { methods: Map<name, descriptor> }> */
+let memberCache = null;
+let memberCacheTime = 0;
+const MEMBER_CACHE_TTL_MS = 30_000; // 30 s; also invalidated on file save
+
+/** Parse all .cm workspace files and return a class → methods map. */
+async function buildMemberCache() {
+  const exclude = '**/{node_modules,.git,out,dist,build}/**';
+  const uris = await vscode.workspace.findFiles('**/*.cm', exclude);
+  const decoder = new TextDecoder('utf-8');
+  const classMap = new Map();
+
+  const batchSize = 64;
+  for (let i = 0; i < uris.length; i += batchSize) {
+    const batch = uris.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map(async (uri) => {
+        try { return decoder.decode(await vscode.workspace.fs.readFile(uri)); }
+        catch { return null; }
+      })
+    );
+    for (const text of results) {
+      if (!text) continue;
+      const ranges = classRanges(text);
+      METHOD_RE.lastIndex = 0;
+      let m;
+      while ((m = METHOD_RE.exec(text)) !== null) {
+        const returnType = m[4].trim();
+        const name = m[5];
+        if (NON_TYPE_KEYWORDS.has(returnType) || NON_TYPE_KEYWORDS.has(name)) continue;
+        const params = m[6].replace(/\s+/g, ' ').trim();
+        const defOffset = m.index + m[1].length + m[2].length;
+        const className = enclosingClass(ranges, defOffset);
+        if (!className) continue;
+        if (!classMap.has(className)) classMap.set(className, { methods: new Map() });
+        classMap.get(className).methods.set(name, {
+          name, params, returnType,
+          modifiers: m[3].replace(/\s+/g, ' ').trim(),
+        });
+      }
+    }
+  }
+  return classMap;
+}
+
+async function getMemberCache() {
+  const now = Date.now();
+  if (!memberCache || now - memberCacheTime > MEMBER_CACHE_TTL_MS) {
+    memberCache = await buildMemberCache();
+    memberCacheTime = now;
+  }
+  return memberCache;
+}
+
+/**
+ * Scan backward in text before cursorOffset for a declaration `TypeName varName`
+ * and return TypeName.  Only considers types starting with an uppercase letter.
+ */
+function inferType(text, cursorOffset, varName) {
+  const snippet = text.slice(0, cursorOffset);
+  const re = new RegExp(`\\b([A-Z][A-Za-z_\\w]*)(?:\\[\\])?\\s+${varName}\\b`, 'g');
+  let best = null;
+  let m;
+  while ((m = re.exec(snippet)) !== null) best = m[1];
+  return best;
+}
+
+/**
+ * Collect all `objectName.XXX` identifiers seen in open buffers as a fallback
+ * when static type inference cannot resolve the class.
+ */
+function corpusMembers(objectName) {
+  const re = new RegExp(`\\b${objectName}\\.(\\w+)`, 'g');
+  const seen = new Set();
+  for (const doc of vscode.workspace.textDocuments) {
+    if (!isCmDocument(doc)) continue;
+    re.lastIndex = 0;
+    let m;
+    const text = doc.getText();
+    while ((m = re.exec(text)) !== null) seen.add(m[1]);
+  }
+  return [...seen];
+}
+
+function makeDotMemberProvider() {
+  return {
+    async provideCompletionItems(document, position) {
+      const cfg = getConfig();
+      if (!cfg.enabled) return null;
+
+      // Find the last dot at or before the cursor on this line.
+      const line = document.lineAt(position.line).text;
+      const beforeCursor = line.slice(0, position.character);
+      const dotIndex = beforeCursor.lastIndexOf('.');
+      if (dotIndex === -1) return null;
+
+      // Extract the identifier immediately before the dot.
+      const beforeDot = beforeCursor.slice(0, dotIndex);
+      const idMatch = beforeDot.match(/([A-Za-z_$][\w$]*)$/);
+      if (!idMatch) return null;
+      const objectName = idMatch[1];
+
+      // The text the user may have typed after the dot (partial member name).
+      const partialRange = new vscode.Range(
+        position.line, dotIndex + 1,
+        position.line, position.character
+      );
+
+      const completions = [];
+      const addedNames = new Set();
+
+      try {
+        const classMap = await getMemberCache();
+        const cursorOffset = document.offsetAt(position);
+
+        // If the identifier starts with uppercase treat it as the class itself
+        // (static / factory access); otherwise infer type from variable declarations.
+        const className = /^[A-Z]/.test(objectName)
+          ? objectName
+          : inferType(document.getText(), cursorOffset, objectName);
+
+        if (className && classMap.has(className)) {
+          for (const [, method] of classMap.get(className).methods) {
+            const item = new vscode.CompletionItem(method.name, vscode.CompletionItemKind.Method);
+            item.detail = `${method.returnType}  ·  ${className}`;
+            item.documentation = `${method.modifiers ? method.modifiers + ' ' : ''}${method.returnType} ${method.name}(${method.params})`;
+            item.insertText = new vscode.SnippetString(
+              method.params.length > 0
+                ? `${method.name}(\${1:${escapeSnippet(method.params)}})`
+                : `${method.name}()`
+            );
+            item.filterText = method.name;
+            item.sortText = '0' + method.name;
+            item.range = partialRange;
+            completions.push(item);
+            addedNames.add(method.name);
+          }
+        }
+      } catch (_) { /* cache miss — fall through to corpus */ }
+
+      // Corpus fallback: every `objectName.xxx` seen across open buffers.
+      for (const member of corpusMembers(objectName)) {
+        if (addedNames.has(member)) continue;
+        const item = new vscode.CompletionItem(member, vscode.CompletionItemKind.Property);
+        item.detail = 'corpus';
+        item.sortText = '1' + member;
+        item.range = partialRange;
+        completions.push(item);
+        addedNames.add(member);
+      }
+
+      return completions.length > 0 ? completions : null;
+    },
+  };
+}
+
+/**
+ * CompletionItemProvider — mirrors cm-ac-source-candidates in Emacs:
+ * the same dabbrev candidate list exposed to VS Code's IntelliSense dropdown.
+ */
+function makeDabbrevProvider() {
+  return {
+    provideCompletionItems(document, position) {
+      const cfg = getConfig();
+      if (!cfg.enabled) return null;
+
+      const info = prefixAt(document, position, cfg.wordChars);
+      if (!info) return null;
+
+      const cursorOffset = document.offsetAt(position);
+      const candidates = collectCandidates(
+        document,
+        cursorOffset,
+        info.prefix,
+        cfg.wordChars,
+        cfg.searchAll
+      );
+      if (candidates.length === 0) return null;
+
+      return candidates.map((word, i) => {
+        const item = new vscode.CompletionItem(word, vscode.CompletionItemKind.Text);
+        // Preserve dabbrev ordering (nearest match first) in the sorted list.
+        item.sortText = String(i).padStart(6, '0');
+        item.detail = 'dabbrev';
+        return item;
+      });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// CM-style indentation  (replicates Emacs `cm-indent-command` + untabify)
+//
+// In Emacs, CM files use cc-mode's `c-indent-command` configured like this
+// (base/emacs/cm-bindings.el, emacs20/cm.el, cm-edit.el):
+//
+//     c-basic-offset        4     one indent level = 4 spaces
+//     substatement-open     0     a block's { sits under its statement
+//     substatement          *     a braceless substatement body: +2 (half)
+//     statement-cont        *     line continuations: +2 (half)
+//     case-label            *     case/default labels: +2 (half)
+//     statement-case-intro  *     body under a case label: +2 from the label
+//     cpp-macro             0     #-preprocessor lines: column 0
+//
+// `cm-indent-command` first runs `whitespace-cleanup-region` — the "untabify":
+// tabs become spaces and trailing whitespace is stripped.
+//
+// cc-mode is a large stateful parser; this is a pragmatic brace/paren-depth
+// reimplementation that matches the settings above for ordinary CM code.
+// It is line-based and free of editor side effects (pure text in, text out).
+// ---------------------------------------------------------------------------
+
+function indentConfig() {
+  const c = vscode.workspace.getConfiguration('emacsTabComplete');
+  return {
+    indentSize: c.get('indentSize', 4),
+    tabWidth: c.get('tabWidth', 8),
+  };
+}
+
+/** Expand every tab to spaces by column position — Emacs `untabify`. */
+function untabify(line, tabWidth) {
+  let out = '';
+  let col = 0;
+  for (const ch of line) {
+    if (ch === '\t') {
+      const n = tabWidth - (col % tabWidth);
+      out += ' '.repeat(n);
+      col += n;
+    } else {
+      out += ch;
+      col += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Blank out comments and string/char literals on one line so the remaining
+ * characters can be scanned for brackets safely. Returns the masked code
+ * (same length), the carried block-comment state, and—when a block comment
+ * opens on this line—the column of its `/*` (for `*`-alignment of the box).
+ */
+function maskLine(line, state) {
+  let masked = '';
+  let i = 0;
+  let inBlock = state.inBlockComment;
+  let blockCol = state.blockCommentCol;
+  let openedBlockCol = null;
+  let inStr = null; // '"' or "'" while inside a literal
+  while (i < line.length) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; masked += '  '; i += 2; continue; }
+      masked += ' '; i += 1; continue;
+    }
+    if (inStr) {
+      if (ch === '\\') { masked += '  '; i += 2; continue; }
+      if (ch === inStr) inStr = null;
+      masked += ' '; i += 1; continue;
+    }
+    if (ch === '/' && next === '/') { masked += ' '.repeat(line.length - i); break; }
+    if (ch === '/' && next === '*') {
+      inBlock = true;
+      if (openedBlockCol === null) openedBlockCol = i;
+      masked += '  '; i += 2; continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = ch; masked += ' '; i += 1; continue; }
+    masked += ch; i += 1;
+  }
+  return {
+    masked,
+    inBlockComment: inBlock,
+    blockCommentCol: inBlock ? (state.inBlockComment ? blockCol : openedBlockCol) : 0,
+    openedBlockCol,
+  };
+}
+
+/**
+ * Reformat `text` CM-style: untabified, trailing whitespace stripped, and
+ * re-indented per the cc-mode offsets above. Returns an array of new lines.
+ */
+function reformatLines(text, cfg) {
+  const half = Math.round(cfg.indentSize / 2);
+  const raw = text.split(/\r\n|\r|\n/);
+  const out = [];
+  let depth = 0;     // net open brackets {([ before the current line
+  let parens = 0;    // net open ( and [ (arglists) before the current line
+  let cont = false;  // the previous statement continues onto this line
+  const state = { inBlockComment: false, blockCommentCol: 0 };
+
+  for (let li = 0; li < raw.length; li++) {
+    const line = untabify(raw[li], cfg.tabWidth).replace(/[ \t]+$/, '');
+    const trimmed = line.trim();
+
+    if (trimmed === '') { out.push(''); cont = false; continue; }
+
+    // --- Indent for this line, computed from state BEFORE its own brackets. ---
+    let indent;
+    if (state.inBlockComment) {
+      // Inside a /* */ box: align the leading '*' (and prose) one past the '/*'.
+      indent = state.blockCommentCol + 1;
+    } else if (trimmed.startsWith('#')) {
+      indent = 0; // cpp-macro 0
+    } else {
+      indent = depth * cfg.indentSize;
+      const first = trimmed[0];
+      if (first === '}' || first === ')' || first === ']') {
+        indent -= cfg.indentSize;               // closing bracket dedents
+      } else if (/^(case\b|default\b\s*:)/.test(trimmed)) {
+        indent -= half;                          // case-label *
+      }
+      // statement-cont *: a continued statement gets +half, but a line that
+      // merely opens/closes a block is not itself a continuation.
+      if (cont && parens === 0 && first !== '{' && first !== '}') indent += half;
+      if (indent < 0) indent = 0;
+    }
+
+    const newLine = ' '.repeat(indent) + trimmed;
+    out.push(newLine);
+
+    // --- Update bracket depth / comment state / continuation for next line. ---
+    const r = maskLine(newLine, state);
+    state.inBlockComment = r.inBlockComment;
+    state.blockCommentCol = r.blockCommentCol;
+
+    for (const ch of r.masked) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth = Math.max(0, depth - 1);
+      else if (ch === '(' || ch === '[') { depth++; parens++; }
+      else if (ch === ')' || ch === ']') { depth = Math.max(0, depth - 1); parens = Math.max(0, parens - 1); }
+    }
+
+    if (state.inBlockComment || parens > 0) {
+      cont = parens > 0 ? false : cont; // inside an arglist depth handles it
+      if (state.inBlockComment) cont = false;
+    } else {
+      const codeTrim = r.masked.replace(/[ \t]+$/, '');
+      const last = codeTrim[codeTrim.length - 1];
+      cont = !(codeTrim === '' || last === ';' || last === '{' || last === '}' || last === ':');
+    }
+  }
+  return out;
+}
+
+/** Build TextEdits that reindent either the whole document or one line range. */
+function reindentEdits(document, range) {
+  const cfg = indentConfig();
+  const newLines = reformatLines(document.getText(), cfg);
+  const edits = [];
+  const start = range ? range.start.line : 0;
+  const end = range ? range.end.line : document.lineCount - 1;
+  for (let i = start; i <= end && i < newLines.length && i < document.lineCount; i++) {
+    const old = document.lineAt(i);
+    if (old.text !== newLines[i]) edits.push(vscode.TextEdit.replace(old.range, newLines[i]));
+  }
+  return edits;
+}
+
+/** Command: reindent + untabify the selection (if any) or the whole buffer. */
+async function reindentBuffer() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isCmDocument(editor.document)) {
+    vscode.window.showInformationMessage('Open a .cm file to reindent.');
+    return;
+  }
+  const sel = editor.selection;
+  const range = sel.isEmpty
+    ? null
+    : new vscode.Range(sel.start.line, 0, sel.end.line, 0);
+  const edits = reindentEdits(editor.document, range);
+  if (edits.length === 0) return;
+  await editor.edit((eb) => {
+    for (const e of edits) eb.replace(e.range, e.newText);
+  });
+}
+
+function makeFormattingProvider() {
+  return {
+    provideDocumentFormattingEdits(document) {
+      return reindentEdits(document, null);
+    },
+    provideDocumentRangeFormattingEdits(document, range) {
+      return reindentEdits(document, range);
+    },
+    // Electric reindent on newline / closing brace (needs editor.formatOnType).
+    provideOnTypeFormattingEdits(document, position) {
+      const line = position.line;
+      return reindentEdits(document, new vscode.Range(line, 0, line, 0));
+    },
+  };
+}
+
 function activate(context) {
+  const dotProvider = makeDotMemberProvider();
+  const formatter = makeFormattingProvider();
   context.subscriptions.push(
     vscode.commands.registerCommand('emacsTabComplete.expand', expand),
     vscode.commands.registerCommand('emacsTabComplete.listMethods', listMethods),
     vscode.window.onDidChangeActiveTextEditor(() => {
       session = null;
-    })
+    }),
+    // Invalidate the member cache whenever a .cm file is saved.
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (doc.fileName.endsWith('.cm')) memberCache = null;
+    }),
+    // Dabbrev IntelliSense dropdown (word-prefix matching across buffers).
+    vscode.languages.registerCompletionItemProvider(
+      CM_SELECTOR,
+      makeDabbrevProvider()
+    ),
+    // Dot-triggered member completion: "obj."  →  methods of obj's class.
+    vscode.languages.registerCompletionItemProvider(
+      CM_SELECTOR,
+      dotProvider,
+      '.'
+    ),
+    // CM-style indentation (cc-mode offsets) + untabify, like Emacs.
+    vscode.commands.registerCommand('emacsTabComplete.reindentBuffer', reindentBuffer),
+    vscode.languages.registerDocumentFormattingEditProvider(CM_SELECTOR, formatter),
+    vscode.languages.registerDocumentRangeFormattingEditProvider(CM_SELECTOR, formatter),
+    vscode.languages.registerOnTypeFormattingEditProvider(CM_SELECTOR, formatter, '}')
   );
 }
 

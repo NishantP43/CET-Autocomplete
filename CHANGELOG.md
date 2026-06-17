@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.0.8
+
+- **Dot-triggered member completion (`.cm` only).** Type `obj.` and the
+  members of `obj`'s class appear, resolved by scanning backward for the
+  variable's declared type (or treating an uppercase name as the class itself).
+  Falls back to a corpus scan of `obj.xxx` usages across open `.cm` buffers.
+- **CM-style indentation + untabify**, mirroring Emacs `cm-indent-command`
+  (cc-mode offsets: 4-space levels, half-indent for `case:` / continuations,
+  `#` lines to column 0). Run it via **Ctrl+Alt+\\** (selection, or whole
+  buffer when nothing is selected), the **Reindent / Untabify (CM)** command,
+  or **Format Document**. Tabs become spaces and trailing whitespace is
+  stripped. New settings: `emacsTabComplete.indentSize`, `tabWidth`.
+- All completion, expansion, and indentation features are now scoped to
+  `.cm` files, and candidate sources are limited to other open `.cm` buffers.
+
 ## 0.0.4
 
 - Completing from a typed word now inserts the **full overridable stub** — the

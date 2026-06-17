@@ -1,8 +1,8 @@
 {
   "name": "emacs-tab-complete",
-  "displayName": "Emacs Tab Complete",
+  "displayName": "Emacs to Visual Studio Code",
   "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
-  "version": "0.0.4",
+  "version": "0.0.8",
   "publisher": "NishantPatil",
   "license": "MIT",
   "engines": {
@@ -27,14 +27,23 @@
     "commands": [
       {
         "command": "emacsTabComplete.expand",
-        "title": "Emacs Tab Complete: Expand / Cycle"
+        "title": "Emacs to Visual Studio Code: Expand / Cycle"
       },
       {
         "command": "emacsTabComplete.listMethods",
-        "title": "Emacs Tab Complete: List Methods Across Workspace…"
+        "title": "Emacs to Visual Studio Code: List Methods Across Workspace…"
+      },
+      {
+        "command": "emacsTabComplete.reindentBuffer",
+        "title": "Emacs to Visual Studio Code: Reindent / Untabify (CM)"
       }
     ],
     "keybindings": [
+      {
+        "command": "emacsTabComplete.reindentBuffer",
+        "key": "ctrl+alt+\\",
+        "when": "editorTextFocus && !editorReadonly && resourceExtname == .cm"
+      },
       {
         "command": "emacsTabComplete.expand",
         "key": "tab",
@@ -47,7 +56,7 @@
       }
     ],
     "configuration": {
-      "title": "Emacs Tab Complete",
+      "title": "Emacs to Visual Studio Code",
       "properties": {
         "emacsTabComplete.enabled": {
           "type": "boolean",
@@ -68,6 +77,16 @@
           "type": "boolean",
           "default": true,
           "description": "When there is nothing to complete, perform the normal Tab action (indent / insert tab)."
+        },
+        "emacsTabComplete.indentSize": {
+          "type": "number",
+          "default": 4,
+          "description": "Spaces per indent level for CM reindent / formatting (Emacs c-basic-offset)."
+        },
+        "emacsTabComplete.tabWidth": {
+          "type": "number",
+          "default": 8,
+          "description": "Tab width used when untabifying (expanding existing tab characters to spaces), matching Emacs tab-width."
         }
       }
     }
