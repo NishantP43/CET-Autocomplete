@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.9
+
+- **Dot-member completion now follows inheritance.** Typing `obj.` lists the
+  methods declared on `obj`'s class **and every method inherited up the
+  `extends` chain** (e.g. an `AboBaseCover` shows `HonBaseCover`'s methods too).
+  Own methods sort first, inherited methods next (tagged "(inherited)" with the
+  declaring class), and a subclass override shadows the base.
+
 ## 0.0.8
 
 - **Dot-triggered member completion (`.cm` only).** Type `obj.` and the

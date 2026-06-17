@@ -224,15 +224,25 @@ const NON_TYPE_KEYWORDS = new Set([
 const METHOD_RE = /(^|\n)([ \t]*)((?:(?:public|private|protected|package|static|const|abstract|final|virtual|extend|override)\s+)*)([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)*(?:\s*\[\s*\])?)\s+([A-Za-z_]\w*)\s*\(([^;{}]*?)\)\s*\{/g;
 
 const PACKAGE_RE = /^\s*package\s+([A-Za-z_][\w.]*)\s*;/m;
-const CLASS_RE = /\bclass\s+([A-Za-z_]\w*)/g;
+// Captures the class name and, optionally, the `extends Base[, Base2]` clause.
+const CLASS_RE = /\bclass\s+([A-Za-z_]\w*)(?:\s+extends\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*))?/g;
 
-/** Build a sorted list of class declarations with their start offsets. */
+/** Parse an `extends` clause into a list of simple base-class names. */
+function parseBases(extendsClause) {
+  if (!extendsClause) return [];
+  return extendsClause
+    .split(',')
+    .map((s) => s.trim().split('.').pop()) // strip package qualifiers
+    .filter(Boolean);
+}
+
+/** Build a sorted list of class declarations with their start offsets + bases. */
 function classRanges(text) {
   const ranges = [];
   let m;
   CLASS_RE.lastIndex = 0;
   while ((m = CLASS_RE.exec(text)) !== null) {
-    ranges.push({ name: m[1], offset: m.index });
+    ranges.push({ name: m[1], offset: m.index, bases: parseBases(m[2]) });
   }
   return ranges;
 }
@@ -435,6 +445,12 @@ async function buildMemberCache() {
     for (const text of results) {
       if (!text) continue;
       const ranges = classRanges(text);
+      // Register every class (and its bases) up front, even if it has no
+      // methods of its own — so inheritance chains can still be walked.
+      for (const r of ranges) {
+        if (!classMap.has(r.name)) classMap.set(r.name, { methods: new Map(), bases: [] });
+        if (r.bases.length) classMap.get(r.name).bases = r.bases;
+      }
       METHOD_RE.lastIndex = 0;
       let m;
       while ((m = METHOD_RE.exec(text)) !== null) {
@@ -445,7 +461,7 @@ async function buildMemberCache() {
         const defOffset = m.index + m[1].length + m[2].length;
         const className = enclosingClass(ranges, defOffset);
         if (!className) continue;
-        if (!classMap.has(className)) classMap.set(className, { methods: new Map() });
+        if (!classMap.has(className)) classMap.set(className, { methods: new Map(), bases: [] });
         classMap.get(className).methods.set(name, {
           name, params, returnType,
           modifiers: m[3].replace(/\s+/g, ' ').trim(),
@@ -454,6 +470,28 @@ async function buildMemberCache() {
     }
   }
   return classMap;
+}
+
+/**
+ * All methods usable on an instance of `className`: its own methods plus every
+ * method inherited up the `extends` chain. A subclass override shadows the
+ * base. Returns Map<methodName, { method, owner }>.
+ */
+function resolveMembers(classMap, className) {
+  const result = new Map();
+  const seen = new Set();
+  const walk = (cn) => {
+    if (!cn || seen.has(cn)) return;
+    seen.add(cn);
+    const entry = classMap.get(cn);
+    if (!entry) return;
+    for (const [name, method] of entry.methods) {
+      if (!result.has(name)) result.set(name, { method, owner: cn }); // nearest wins
+    }
+    for (const base of entry.bases || []) walk(base);
+  };
+  walk(className);
+  return result;
 }
 
 async function getMemberCache() {
@@ -533,9 +571,11 @@ function makeDotMemberProvider() {
           : inferType(document.getText(), cursorOffset, objectName);
 
         if (className && classMap.has(className)) {
-          for (const [, method] of classMap.get(className).methods) {
+          // Own methods + everything inherited up the `extends` chain.
+          for (const [, { method, owner }] of resolveMembers(classMap, className)) {
             const item = new vscode.CompletionItem(method.name, vscode.CompletionItemKind.Method);
-            item.detail = `${method.returnType}  ·  ${className}`;
+            const inherited = owner !== className;
+            item.detail = `${method.returnType}  ·  ${owner}${inherited ? ' (inherited)' : ''}`;
             item.documentation = `${method.modifiers ? method.modifiers + ' ' : ''}${method.returnType} ${method.name}(${method.params})`;
             item.insertText = new vscode.SnippetString(
               method.params.length > 0
@@ -543,7 +583,8 @@ function makeDotMemberProvider() {
                 : `${method.name}()`
             );
             item.filterText = method.name;
-            item.sortText = '0' + method.name;
+            // Own methods sort first (0), inherited next (1), corpus last (handled below).
+            item.sortText = (inherited ? '1' : '0') + method.name;
             item.range = partialRange;
             completions.push(item);
             addedNames.add(method.name);
@@ -556,7 +597,7 @@ function makeDotMemberProvider() {
         if (addedNames.has(member)) continue;
         const item = new vscode.CompletionItem(member, vscode.CompletionItemKind.Property);
         item.detail = 'corpus';
-        item.sortText = '1' + member;
+        item.sortText = '2' + member;
         item.range = partialRange;
         completions.push(item);
         addedNames.add(member);
