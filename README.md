@@ -1,11 +1,6 @@
-# Emacs to Visual Studio Code
-Version Changelog :
+# Emacs Tab Complete
 
-## 0.0.10 New features
-- Made `obj.` list that class's methods, including ones inherited from its `extends` parents — mine first, inherited ones after.
-- Insert the picked method with its parameters ready to edit.
-- Added Emacs-style CM reindenting: 4-space levels, tabs turned into spaces, trailing spaces stripped.
-- Let you run it with Ctrl+Alt+\, the Reindent/Untabify command, or Format Document.
+Bring Emacs's **`dabbrev-expand` / `hippie-expand`** word completion to VS Code.
 
 Type a prefix, press <kbd>Tab</kbd>, and the word is completed from text that
 already exists in your open files. Press <kbd>Tab</kbd> again to **cycle**

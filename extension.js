@@ -318,6 +318,36 @@ function seedPrefix(editor) {
   return null;
 }
 
+// Cached flat list of every method descriptor across the workspace, so the
+// Ctrl+Tab picker scans the files only once per TTL (and after saves) instead
+// of re-reading thousands of files on every invocation.
+let methodDescCache = null;
+let methodDescTime = 0;
+const METHOD_DESC_TTL_MS = 60_000;
+
+async function getMethodDescriptors() {
+  const exclude = '**/{node_modules,.git,out,dist,build}/**';
+  const uris = await vscode.workspace.findFiles('**/*.cm', exclude);
+  const decoder = new TextDecoder('utf-8');
+  const all = [];
+  const batchSize = 64;
+  for (let i = 0; i < uris.length; i += batchSize) {
+    const batch = uris.slice(i, i + batchSize);
+    const texts = await Promise.all(
+      batch.map(async (uri) => {
+        try { return { uri, text: decoder.decode(await vscode.workspace.fs.readFile(uri)) }; }
+        catch { return null; }
+      })
+    );
+    for (const r of texts) {
+      if (!r) continue;
+      const label = vscode.workspace.asRelativePath(r.uri);
+      for (const d of parseMethods(r.text, label)) { d.uri = r.uri; all.push(d); }
+    }
+  }
+  return all;
+}
+
 async function listMethods() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -330,71 +360,68 @@ async function listMethods() {
   }
 
   const seed = seedPrefix(editor);
+  const maxItems = vscode.workspace.getConfiguration('emacsTabComplete').get('methodPickerMaxItems', 2000);
 
-  const descriptors = await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Scanning .cm files for methods…' },
-    async () => {
-      const exclude = '**/{node_modules,.git,out,dist,build}/**';
-      const uris = await vscode.workspace.findFiles('**/*.cm', exclude);
-      const decoder = new TextDecoder('utf-8');
-      const all = [];
-      // Read in batches to avoid opening thousands of handles at once.
-      const batchSize = 64;
-      for (let i = 0; i < uris.length; i += batchSize) {
-        const batch = uris.slice(i, i + batchSize);
-        const texts = await Promise.all(
-          batch.map(async (uri) => {
-            try {
-              const bytes = await vscode.workspace.fs.readFile(uri);
-              return { uri, text: decoder.decode(bytes) };
-            } catch (e) {
-              return null;
-            }
-          })
-        );
-        for (const r of texts) {
-          if (!r) continue;
-          const label = vscode.workspace.asRelativePath(r.uri);
-          for (const d of parseMethods(r.text, label)) {
-            d.uri = r.uri;
-            all.push(d);
-          }
-        }
-      }
-      return all;
-    }
-  );
+  // Use the cache when warm; only show the scanning progress when (re)building.
+  let descriptors;
+  if (methodDescCache && Date.now() - methodDescTime < METHOD_DESC_TTL_MS) {
+    descriptors = methodDescCache;
+  } else {
+    descriptors = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Indexing .cm methods…' },
+      getMethodDescriptors
+    );
+    methodDescCache = descriptors;
+    methodDescTime = Date.now();
+  }
 
   if (!descriptors || descriptors.length === 0) {
     vscode.window.showInformationMessage('No methods found in any .cm files in the workspace.');
     return;
   }
 
-  descriptors.sort(
+  // Narrow the candidate set so the picker stays small and fast:
+  //  • with a word under the cursor, keep only methods whose name matches it;
+  //  • otherwise, restrict to the current file's package.
+  const myPkg = (editor.document.getText().match(PACKAGE_RE) || [])[1] || '';
+  let filtered = descriptors;
+  let scope = 'workspace';
+  if (seed && seed.text) {
+    const q = seed.text.toLowerCase();
+    filtered = descriptors.filter((d) => d.name.toLowerCase().includes(q));
+    scope = `matching “${seed.text}”`;
+  } else if (myPkg) {
+    filtered = descriptors.filter((d) => d.pkg === myPkg);
+    scope = myPkg;
+  }
+  if (filtered.length === 0) { filtered = descriptors; scope = 'workspace'; }
+
+  filtered.sort(
     (a, b) =>
       a.name.localeCompare(b.name) ||
       (a.className || '').localeCompare(b.className || '') ||
       a.fileLabel.localeCompare(b.fileLabel)
   );
 
-  const items = descriptors.map((d) => ({
+  const total = filtered.length;
+  const capped = total > maxItems;
+  if (capped) filtered = filtered.slice(0, maxItems);
+
+  const items = filtered.map((d) => ({
     label: `${d.name}(${d.params})`,
     description: `${d.returnType}${d.className ? '  ·  ' + d.className : '  ·  <free>'}`,
     detail: `${d.pkg || d.fileLabel}  —  ${d.fileLabel}:${d.line}`,
     descriptor: d,
   }));
 
-  // Use a QuickPick (not showQuickPick) so we can pre-seed the filter with the
-  // word the cursor is on, e.g. typing `allowsnap` then Ctrl+Tab immediately
-  // narrows the list to matching methods.
   const pick = await new Promise((resolve) => {
     const qp = vscode.window.createQuickPick();
     qp.items = items;
     qp.matchOnDescription = true;
     qp.matchOnDetail = true;
-    qp.title = `Methods across workspace  (${items.length})`;
+    qp.title = `Methods (${scope})  ·  ${capped ? maxItems + ' of ' + total : total}`;
     qp.placeholder = seed
-      ? `Completing “${seed.text}” — pick a method, or clear to see all…`
+      ? `Completing “${seed.text}” — pick a method…`
       : 'Type to filter by method name, class, package, or file…';
     if (seed) qp.value = seed.text;
     qp.onDidAccept(() => {
@@ -733,16 +760,32 @@ function maskLine(line, state) {
 
 /**
  * Reformat `text` CM-style: untabified, trailing whitespace stripped, and
- * re-indented per the cc-mode offsets above. Returns an array of new lines.
+ * re-indented. Returns an array of new lines.
+ *
+ * Uses a stack of open brackets. A `{` opens a *block*: its body indents one
+ * level past the enclosing block (4 spaces), and its `}` lines up with the
+ * statement that opened it — so K&R braces (`if (...) {`), `} else {`, loops,
+ * and method bodies all come out right. A `(` or `[` opens an *arglist*:
+ * continuation lines align to the column just after the bracket (cc-mode
+ * arglist style), so multi-line `if`/`while` conditions and call argument
+ * lists stay aligned to their opening paren.
  */
 function reformatLines(text, cfg) {
-  const half = Math.round(cfg.indentSize / 2);
+  const size = cfg.indentSize;
+  const half = Math.round(size / 2);
   const raw = text.split(/\r\n|\r|\n/);
   const out = [];
-  let depth = 0;     // net open brackets {([ before the current line
-  let parens = 0;    // net open ( and [ (arglists) before the current line
-  let cont = false;  // the previous statement continues onto this line
+  const stack = []; // { ch:'{'|'('|'[', openerIndent, contentIndent }
+  let cont = false; // a non-bracket statement continues onto the next line
   const state = { inBlockComment: false, blockCommentCol: 0 };
+
+  // Indentation of the body of the nearest enclosing `{` block (0 at top level).
+  const enclosingBlockContent = () => {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].ch === '{') return stack[i].contentIndent;
+    }
+    return 0;
+  };
 
   for (let li = 0; li < raw.length; li++) {
     const line = untabify(raw[li], cfg.tabWidth).replace(/[ \t]+$/, '');
@@ -750,47 +793,78 @@ function reformatLines(text, cfg) {
 
     if (trimmed === '') { out.push(''); cont = false; continue; }
 
-    // --- Indent for this line, computed from state BEFORE its own brackets. ---
-    let indent;
+    // Inside a /* */ block comment: keep the interior exactly as written
+    // (only untabified + trailing-stripped). Free-form prose and example code
+    // must never be re-indented.
     if (state.inBlockComment) {
-      // Inside a /* */ box: align the leading '*' (and prose) one past the '/*'.
-      indent = state.blockCommentCol + 1;
-    } else if (trimmed.startsWith('#')) {
-      indent = 0; // cpp-macro 0
+      out.push(line);
+      const rc = maskLine(line, state);
+      state.inBlockComment = rc.inBlockComment;
+      state.blockCommentCol = rc.blockCommentCol;
+      cont = false;
+      continue;
+    }
+
+    const top = stack.length ? stack[stack.length - 1] : null;
+    const inParen = !!top && (top.ch === '(' || top.ch === '[');
+
+    // --- Indent for this line, from state BEFORE its own brackets. ---
+    let indent;
+    if (trimmed.startsWith('#')) {
+      indent = 0;                                 // cpp-macro 0
     } else {
-      indent = depth * cfg.indentSize;
       const first = trimmed[0];
       if (first === '}' || first === ')' || first === ']') {
-        indent -= cfg.indentSize;               // closing bracket dedents
-      } else if (/^(case\b|default\b\s*:)/.test(trimmed)) {
-        indent -= half;                          // case-label *
+        indent = top ? top.openerIndent : 0;      // closer lines up with opener
+      } else {
+        indent = top ? top.contentIndent : 0;
+        // CM code indents `case:`/`default:` at the full block level (not the
+        // half-step cc-mode default), so they need no special dedent here.
+        // A braceless substatement / continued line gets a half step, matching
+        // cc-mode `substatement *` and `statement-cont *`.
+        if (cont && !inParen) indent += half;
       }
-      // statement-cont *: a continued statement gets +half, but a line that
-      // merely opens/closes a block is not itself a continuation.
-      if (cont && parens === 0 && first !== '{' && first !== '}') indent += half;
       if (indent < 0) indent = 0;
     }
 
     const newLine = ' '.repeat(indent) + trimmed;
     out.push(newLine);
 
-    // --- Update bracket depth / comment state / continuation for next line. ---
+    // --- Update bracket stack / comment state from this line's code. ---
     const r = maskLine(newLine, state);
     state.inBlockComment = r.inBlockComment;
     state.blockCommentCol = r.blockCommentCol;
+    const code = r.masked;
 
-    for (const ch of r.masked) {
-      if (ch === '{') depth++;
-      else if (ch === '}') depth = Math.max(0, depth - 1);
-      else if (ch === '(' || ch === '[') { depth++; parens++; }
-      else if (ch === ')' || ch === ']') { depth = Math.max(0, depth - 1); parens = Math.max(0, parens - 1); }
+    for (let k = 0; k < code.length; k++) {
+      const ch = code[k];
+      if (ch === '{') {
+        const base = enclosingBlockContent();
+        stack.push({ ch: '{', openerIndent: base, contentIndent: base + size });
+      } else if (ch === '(' || ch === '[') {
+        // Align continuations to the first char after the bracket; if nothing
+        // follows on this line, hang one level under the opener.
+        let contentCol = -1;
+        for (let j = k + 1; j < newLine.length; j++) {
+          if (newLine[j] !== ' ' && newLine[j] !== '\t') { contentCol = j; break; }
+        }
+        stack.push({
+          ch,
+          openerIndent: indent,
+          contentIndent: contentCol !== -1 ? contentCol : indent + size,
+        });
+      } else if (ch === '}' || ch === ')' || ch === ']') {
+        if (stack.length) stack.pop();
+      }
     }
 
-    if (state.inBlockComment || parens > 0) {
-      cont = parens > 0 ? false : cont; // inside an arglist depth handles it
-      if (state.inBlockComment) cont = false;
+    // --- Does this line continue (no terminator, not inside an arglist)? ---
+    const newTop = stack.length ? stack[stack.length - 1] : null;
+    const stillInParen = !!newTop && (newTop.ch === '(' || newTop.ch === '[');
+    if (state.inBlockComment || stillInParen) {
+      cont = false;
     } else {
-      const codeTrim = r.masked.replace(/[ \t]+$/, '');
+      const codeTrim = code.replace(/[ \t]+$/, '');
       const last = codeTrim[codeTrim.length - 1];
       cont = !(codeTrim === '' || last === ';' || last === '{' || last === '}' || last === ':');
     }
@@ -846,6 +920,276 @@ function makeFormattingProvider() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// CM Navigate — Go to Definition + class/method browsing, mirroring the Emacs
+// "CM Navigate" menu. (The compiler-error items — Go To Next/Prev/First Error —
+// are omitted: they require the real CM compiler's diagnostics. "Pop Back From
+// Definition" is VS Code's built-in Go Back, Alt+Left.)
+// ---------------------------------------------------------------------------
+
+let symbolIndex = null;
+let symbolIndexTime = 0;
+const SYMBOL_TTL_MS = 30_000;
+
+/** 1-based line number containing byte offset `off`. */
+function lineOf(text, off) {
+  return text.slice(0, off).split('\n').length;
+}
+
+/** Scan every workspace .cm file into a location-aware class/method index. */
+async function buildSymbolIndex() {
+  const exclude = '**/{node_modules,.git,out,dist,build}/**';
+  const uris = await vscode.workspace.findFiles('**/*.cm', exclude);
+  const decoder = new TextDecoder('utf-8');
+  const classes = new Map();       // name -> { name, uri, line, bases, methods:[{name,params,returnType,line}] }
+  const methodsByName = new Map();  // name -> [{ className, uri, line, params, returnType }]
+
+  const batch = 64;
+  for (let i = 0; i < uris.length; i += batch) {
+    const chunk = uris.slice(i, i + batch);
+    const texts = await Promise.all(
+      chunk.map(async (uri) => {
+        try { return { uri, text: decoder.decode(await vscode.workspace.fs.readFile(uri)) }; }
+        catch { return null; }
+      })
+    );
+    for (const r of texts) {
+      if (!r) continue;
+      const { uri, text } = r;
+      const ranges = classRanges(text);
+      for (const rg of ranges) {
+        if (!classes.has(rg.name)) {
+          classes.set(rg.name, {
+            name: rg.name, uri, line: lineOf(text, rg.offset), bases: rg.bases, methods: [],
+          });
+        } else if (rg.bases.length && !classes.get(rg.name).bases.length) {
+          classes.get(rg.name).bases = rg.bases;
+        }
+      }
+      METHOD_RE.lastIndex = 0;
+      let m;
+      while ((m = METHOD_RE.exec(text)) !== null) {
+        const returnType = m[4].trim();
+        const name = m[5];
+        if (NON_TYPE_KEYWORDS.has(returnType) || NON_TYPE_KEYWORDS.has(name)) continue;
+        const defOffset = m.index + m[1].length + m[2].length;
+        const line = lineOf(text, defOffset);
+        const params = m[6].replace(/\s+/g, ' ').trim();
+        const className = enclosingClass(ranges, defOffset);
+        if (!methodsByName.has(name)) methodsByName.set(name, []);
+        methodsByName.get(name).push({ className, uri, line, params, returnType });
+        if (className && classes.has(className)) {
+          classes.get(className).methods.push({ name, params, returnType, line });
+        }
+      }
+    }
+  }
+  return { classes, methodsByName };
+}
+
+async function getSymbolIndex() {
+  const now = Date.now();
+  if (!symbolIndex || now - symbolIndexTime > SYMBOL_TTL_MS) {
+    symbolIndex = await buildSymbolIndex();
+    symbolIndexTime = now;
+  }
+  return symbolIndex;
+}
+
+/** A vscode.Location at the start of a 1-based line. */
+function locAt(uri, line) {
+  const pos = new vscode.Position(Math.max(0, line - 1), 0);
+  return new vscode.Location(uri, pos);
+}
+
+/** The class the cursor is on (if the word is a class) or inside, else null. */
+function classAtCursor(editor, idx) {
+  const doc = editor.document;
+  const wr = doc.getWordRangeAtPosition(editor.selection.active, /[A-Za-z_$][\w$]*/);
+  if (wr && idx.classes.has(doc.getText(wr))) return doc.getText(wr);
+  const ranges = classRanges(doc.getText());
+  return enclosingClass(ranges, doc.offsetAt(editor.selection.active));
+}
+
+/** Go to Definition: classes and methods resolved from the symbol index. */
+function makeDefinitionProvider() {
+  return {
+    async provideDefinition(document, position) {
+      const wr = document.getWordRangeAtPosition(position, /[A-Za-z_$][\w$]*/);
+      if (!wr) return null;
+      const word = document.getText(wr);
+      const idx = await getSymbolIndex();
+      const locs = [];
+      if (idx.classes.has(word)) {
+        const c = idx.classes.get(word);
+        locs.push(locAt(c.uri, c.line));
+      }
+      for (const mi of idx.methodsByName.get(word) || []) locs.push(locAt(mi.uri, mi.line));
+      return locs.length ? locs : null;
+    },
+  };
+}
+
+/** Show a QuickPick of {label, description, detail, location} and jump to it. */
+async function pickAndJump(items, placeHolder) {
+  if (!items.length) { vscode.window.showInformationMessage('Nothing to show.'); return; }
+  const pick = await vscode.window.showQuickPick(items, { placeHolder, matchOnDescription: true, matchOnDetail: true });
+  if (!pick || !pick.location) return;
+  const doc = await vscode.workspace.openTextDocument(pick.location.uri);
+  const ed = await vscode.window.showTextDocument(doc);
+  ed.selection = new vscode.Selection(pick.location.range.start, pick.location.range.start);
+  ed.revealRange(pick.location.range, vscode.TextEditorRevealType.InCenter);
+}
+
+const relUri = (uri) => vscode.workspace.asRelativePath(uri);
+
+async function withClass(action, placeholder) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isCmDocument(editor.document)) {
+    vscode.window.showInformationMessage('Open a .cm file.');
+    return;
+  }
+  const idx = await getSymbolIndex();
+  const cn = classAtCursor(editor, idx);
+  if (!cn || !idx.classes.has(cn)) {
+    vscode.window.showInformationMessage('Put the cursor inside (or on) a class name.');
+    return;
+  }
+  return action(idx, cn, editor);
+}
+
+/** List Parents: the full extends chain of the current class. */
+function listParents() {
+  return withClass((idx, cn) => {
+    const items = [];
+    const seen = new Set();
+    const walk = (name) => {
+      const c = idx.classes.get(name);
+      if (!c) return;
+      for (const b of c.bases) {
+        if (seen.has(b)) continue;
+        seen.add(b);
+        const bc = idx.classes.get(b);
+        items.push({
+          label: b,
+          description: bc ? relUri(bc.uri) : '(not found in workspace)',
+          location: bc ? locAt(bc.uri, bc.line) : null,
+        });
+        if (bc) walk(b);
+      }
+    };
+    walk(cn);
+    return pickAndJump(items, `Parents of ${cn}`);
+  });
+}
+
+/** List Subclasses: every class that (transitively) extends the current one. */
+function listSubclasses() {
+  return withClass((idx, cn) => {
+    const items = [];
+    const seen = new Set();
+    let frontier = [cn];
+    while (frontier.length) {
+      const next = [];
+      for (const [name, c] of idx.classes) {
+        if (c.bases.some((b) => frontier.includes(b)) && !seen.has(name)) {
+          seen.add(name);
+          next.push(name);
+          items.push({ label: name, description: relUri(c.uri), location: locAt(c.uri, c.line) });
+        }
+      }
+      frontier = next;
+    }
+    return pickAndJump(items, `Subclasses of ${cn}`);
+  });
+}
+
+/** List Class Methods: own + inherited methods of the current class. */
+function listClassMethods() {
+  return withClass((idx, cn) => {
+    const items = [];
+    const seen = new Set();
+    const walk = (name) => {
+      const c = idx.classes.get(name);
+      if (!c) return;
+      for (const me of c.methods) {
+        if (seen.has(me.name)) continue;       // nearest (override) wins
+        seen.add(me.name);
+        items.push({
+          label: `${me.name}(${me.params})`,
+          description: `${me.returnType}  ·  ${name}${name === cn ? '' : ' (inherited)'}`,
+          location: locAt(c.uri, me.line),
+        });
+      }
+      for (const b of c.bases) walk(b);
+    };
+    walk(cn);
+    items.sort((a, b) => a.label.localeCompare(b.label));
+    return pickAndJump(items, `Methods of ${cn}`);
+  });
+}
+
+/** Ancestors (extends chain) of `cn`, as a Set of class names. */
+function ancestorsOf(idx, cn) {
+  const set = new Set();
+  const up = (n) => {
+    const c = idx.classes.get(n);
+    if (!c) return;
+    for (const b of c.bases) if (!set.has(b)) { set.add(b); up(b); }
+  };
+  up(cn);
+  return set;
+}
+
+/** Transitive subclasses of `cn`, as a Set of class names. */
+function subclassesOf(idx, cn) {
+  const set = new Set();
+  let frontier = [cn];
+  while (frontier.length) {
+    const next = [];
+    for (const [name, c] of idx.classes) {
+      if (!set.has(name) && c.bases.some((b) => frontier.includes(b))) { set.add(name); next.push(name); }
+    }
+    frontier = next;
+  }
+  return set;
+}
+
+/**
+ * List Overrides: definitions of the method under the cursor within the
+ * enclosing class's hierarchy (itself + ancestors it overrides, + subclasses
+ * that override it). Falls back to all definitions when no class is in scope.
+ */
+function listOverrides() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isCmDocument(editor.document)) {
+    vscode.window.showInformationMessage('Open a .cm file.');
+    return;
+  }
+  const wr = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z_$][\w$]*/);
+  if (!wr) { vscode.window.showInformationMessage('Put the cursor on a method name.'); return; }
+  const name = editor.document.getText(wr);
+  return getSymbolIndex().then((idx) => {
+    const cn = classAtCursor(editor, idx);
+    let related = null;
+    if (cn && idx.classes.has(cn)) {
+      related = new Set([cn, ...ancestorsOf(idx, cn), ...subclassesOf(idx, cn)]);
+    }
+    const defs = (idx.methodsByName.get(name) || [])
+      .filter((d) => d.className && (!related || related.has(d.className)));
+    const items = defs.map((d) => ({
+      label: `${name}(${d.params})`,
+      description: `${d.returnType}  ·  ${d.className}`,
+      detail: relUri(d.uri),
+      location: locAt(d.uri, d.line),
+    }));
+    return pickAndJump(
+      items,
+      related ? `Overrides of ${name} in ${cn}'s hierarchy` : `Definitions of ${name}`
+    );
+  });
+}
+
 function activate(context) {
   const dotProvider = makeDotMemberProvider();
   const formatter = makeFormattingProvider();
@@ -855,10 +1199,16 @@ function activate(context) {
     vscode.window.onDidChangeActiveTextEditor(() => {
       session = null;
     }),
-    // Invalidate the member cache whenever a .cm file is saved.
+    // Invalidate the caches whenever a .cm file is saved.
     vscode.workspace.onDidSaveTextDocument((doc) => {
-      if (doc.fileName.endsWith('.cm')) memberCache = null;
+      if (doc.fileName.endsWith('.cm')) { memberCache = null; symbolIndex = null; methodDescCache = null; }
     }),
+    // CM Navigate: Go to Definition + class-graph browsing.
+    vscode.languages.registerDefinitionProvider(CM_SELECTOR, makeDefinitionProvider()),
+    vscode.commands.registerCommand('emacsTabComplete.listParents', listParents),
+    vscode.commands.registerCommand('emacsTabComplete.listSubclasses', listSubclasses),
+    vscode.commands.registerCommand('emacsTabComplete.listClassMethods', listClassMethods),
+    vscode.commands.registerCommand('emacsTabComplete.listOverrides', listOverrides),
     // Dabbrev IntelliSense dropdown (word-prefix matching across buffers).
     vscode.languages.registerCompletionItemProvider(
       CM_SELECTOR,

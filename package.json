@@ -2,7 +2,7 @@
   "name": "emacs-tab-complete",
   "displayName": "Emacs to Visual Studio Code",
   "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
-  "version": "0.0.9",
+  "version": "1.0.0",
   "publisher": "NishantPatil",
   "license": "MIT",
   "engines": {
@@ -36,8 +36,48 @@
       {
         "command": "emacsTabComplete.reindentBuffer",
         "title": "Emacs to Visual Studio Code: Reindent / Untabify (CM)"
+      },
+      {
+        "command": "emacsTabComplete.listParents",
+        "title": "CM Navigate: List Parents"
+      },
+      {
+        "command": "emacsTabComplete.listSubclasses",
+        "title": "CM Navigate: List Subclasses"
+      },
+      {
+        "command": "emacsTabComplete.listClassMethods",
+        "title": "CM Navigate: List Class Methods"
+      },
+      {
+        "command": "emacsTabComplete.listOverrides",
+        "title": "CM Navigate: List Overrides of Method"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "emacsTabComplete.listClassMethods",
+          "when": "editorTextFocus && resourceExtname == .cm",
+          "group": "navigation@10"
+        },
+        {
+          "command": "emacsTabComplete.listSubclasses",
+          "when": "editorTextFocus && resourceExtname == .cm",
+          "group": "navigation@11"
+        },
+        {
+          "command": "emacsTabComplete.listParents",
+          "when": "editorTextFocus && resourceExtname == .cm",
+          "group": "navigation@12"
+        },
+        {
+          "command": "emacsTabComplete.listOverrides",
+          "when": "editorTextFocus && resourceExtname == .cm",
+          "group": "navigation@13"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "emacsTabComplete.reindentBuffer",
@@ -53,6 +93,36 @@
         "command": "emacsTabComplete.listMethods",
         "key": "ctrl+tab",
         "when": "editorTextFocus && !editorReadonly"
+      },
+      {
+        "command": "emacsTabComplete.listOverrides",
+        "key": "ctrl+alt+o",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.listSubclasses",
+        "key": "ctrl+alt+s",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.listParents",
+        "key": "ctrl+alt+d",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.listClassMethods",
+        "key": "ctrl+alt+a",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "editor.action.revealDefinition",
+        "key": "alt+.",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "workbench.action.navigateBack",
+        "key": "ctrl+alt+i",
+        "when": "editorTextFocus && resourceExtname == .cm"
       }
     ],
     "configuration": {
@@ -87,6 +157,11 @@
           "type": "number",
           "default": 8,
           "description": "Tab width used when untabifying (expanding existing tab characters to spaces), matching Emacs tab-width."
+        },
+        "emacsTabComplete.methodPickerMaxItems": {
+          "type": "number",
+          "default": 2000,
+          "description": "Maximum number of methods shown in the Ctrl+Tab method picker. The list is narrowed to the word under the cursor (or the current package) first; this caps whatever remains so the picker stays fast."
         }
       }
     }

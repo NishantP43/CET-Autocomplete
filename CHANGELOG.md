@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.0.0
+
+- I made the Ctrl+Tab method picker fast: it caches the workspace scan (rebuilt
+  only after saves / every 60s) and narrows results to the word under the
+  cursor — or, with no word, to the current file's package — then caps the list
+  (default 2000, `emacsTabComplete.methodPickerMaxItems`). No more building
+  tens of thousands of items every time.
+- First stable release. Includes: Tab dabbrev completion, object dot-member
+  completion (inheritance-aware), the Ctrl+Tab method browser, CM indentation
+  & untabify, and CM Navigate (Go to Definition, List Parents / Subclasses /
+  Class Methods / Overrides) with Emacs-style key bindings.
+
+## 0.0.14
+
+- I moved the CM Navigate shortcuts off the `Ctrl+C` prefix so Copy keeps
+  working in `.cm` files: List Overrides `Ctrl+Alt+O`, List Subclasses
+  `Ctrl+Alt+S`, List Parents `Ctrl+Alt+D`, List Class Methods `Ctrl+Alt+A`.
+  Go to Definition `Alt+.` and Pop Back `Ctrl+Alt+I` are unchanged.
+
+## 0.0.13
+
+- I scoped **List Overrides** to the method's class hierarchy (ancestors +
+  subclasses) instead of listing every same-named method in the workspace.
+- I added the same Emacs key bindings (in `.cm` files): List Overrides
+  `C-c C-o`, List Subclasses `C-c C-s`, List Parents `C-c C-d`, List Class
+  Methods `C-c C-a`, Go to Definition `M-.`, Pop Back `C-M-i`.
+
+## 0.0.12
+
+- I added CM Navigate features from the Emacs menu: **Go to Definition** (F12 /
+  Ctrl+Click on a class or method jumps to where it's defined), and the
+  right-click commands **List Class Methods**, **List Subclasses**,
+  **List Parents**, and **List Overrides of Method** — all from a workspace
+  index of `.cm` classes and their `extends` chains.
+- Not included: Go To Next/Prev/First Error (needs the CM compiler's
+  diagnostics); Pop Back From Definition is VS Code's built-in Go Back (Alt+Left).
+
+## 0.0.11
+
+- I rewrote the CM reindenter to match how the codebase is actually written:
+  K&R braces, multi-line `if`/`while` conditions and argument lists now align
+  to their opening paren, and braceless `if`/`else`/loop bodies get a half-step.
+  Block comments (including `/* CUT THIS OUT */` regions) are preserved verbatim.
+
 ## 0.0.9
 
 - **Dot-member completion now follows inheritance.** Typing `obj.` lists the
