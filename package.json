@@ -2,7 +2,7 @@
   "name": "emacs-tab-complete",
   "displayName": "Emacs to Visual Studio Code",
   "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "publisher": "NishantPatil",
   "license": "MIT",
   "engines": {

@@ -929,7 +929,7 @@ function makeFormattingProvider() {
 
 let symbolIndex = null;
 let symbolIndexTime = 0;
-const SYMBOL_TTL_MS = 30_000;
+const SYMBOL_TTL_MS = 300_000; // 5 min; also invalidated whenever a .cm is saved
 
 /** 1-based line number containing byte offset `off`. */
 function lineOf(text, off) {
@@ -996,6 +996,15 @@ async function getSymbolIndex() {
   return symbolIndex;
 }
 
+/** Like getSymbolIndex, but shows a progress notification while (re)building. */
+async function getSymbolIndexWithProgress() {
+  if (symbolIndex && Date.now() - symbolIndexTime <= SYMBOL_TTL_MS) return symbolIndex;
+  return vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Indexing .cm classes…' },
+    () => getSymbolIndex()
+  );
+}
+
 /** A vscode.Location at the start of a 1-based line. */
 function locAt(uri, line) {
   const pos = new vscode.Position(Math.max(0, line - 1), 0);
@@ -1018,7 +1027,7 @@ function makeDefinitionProvider() {
       const wr = document.getWordRangeAtPosition(position, /[A-Za-z_$][\w$]*/);
       if (!wr) return null;
       const word = document.getText(wr);
-      const idx = await getSymbolIndex();
+      const idx = await getSymbolIndexWithProgress();
       const locs = [];
       if (idx.classes.has(word)) {
         const c = idx.classes.get(word);
@@ -1049,7 +1058,7 @@ async function withClass(action, placeholder) {
     vscode.window.showInformationMessage('Open a .cm file.');
     return;
   }
-  const idx = await getSymbolIndex();
+  const idx = await getSymbolIndexWithProgress();
   const cn = classAtCursor(editor, idx);
   if (!cn || !idx.classes.has(cn)) {
     vscode.window.showInformationMessage('Put the cursor inside (or on) a class name.');
@@ -1169,7 +1178,7 @@ function listOverrides() {
   const wr = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z_$][\w$]*/);
   if (!wr) { vscode.window.showInformationMessage('Put the cursor on a method name.'); return; }
   const name = editor.document.getText(wr);
-  return getSymbolIndex().then((idx) => {
+  return getSymbolIndexWithProgress().then((idx) => {
     const cn = classAtCursor(editor, idx);
     let related = null;
     if (cn && idx.classes.has(cn)) {
@@ -1226,6 +1235,11 @@ function activate(context) {
     vscode.languages.registerDocumentRangeFormattingEditProvider(CM_SELECTOR, formatter),
     vscode.languages.registerOnTypeFormattingEditProvider(CM_SELECTOR, formatter, '}')
   );
+
+  // Warm the navigation index in the background a few seconds after startup, so
+  // the first Go to Definition / List Parents / etc. is instant instead of
+  // waiting ~20s for the first scan. Silent and best-effort.
+  setTimeout(() => { getSymbolIndex().catch(() => {}); }, 4000);
 }
 
 function deactivate() {

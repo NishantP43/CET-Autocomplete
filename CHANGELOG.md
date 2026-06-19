@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.3
+
+- The navigation index now warms up in the background a few seconds after VS
+  Code starts, so even the first Go to Definition / List Parents / etc. is
+  instant instead of waiting for the initial workspace scan.
+
+## 1.0.2
+
+- Go to Definition now uses the same progress-aware index as the other CM
+  Navigate commands, so every navigate function (Go to Definition, List
+  Parents, Subclasses, Class Methods, Overrides) shows the indexing progress on
+  the first call and traverses the full class hierarchy across the workspace,
+  base/ included.
+
+## 1.0.1
+
+- CM Navigate commands now show an "Indexing .cm classes…" progress notification
+  while the workspace index builds (the first call scans the whole tree, base/
+  included, which can take ~20s), so it no longer looks like nothing happened.
+- I lengthened the class-index lifetime to 5 minutes (still refreshed on save),
+  so List Parents/Subclasses/etc. are instant after the first build. List
+  Parents walks the full extends chain to the root class (verified to `Object`).
+
 ## 1.0.0
 
 - I made the Ctrl+Tab method picker fast: it caches the workspace scan (rebuilt
