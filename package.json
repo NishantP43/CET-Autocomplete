@@ -2,7 +2,7 @@
   "name": "emacs-tab-complete",
   "displayName": "Emacs to Visual Studio Code",
   "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "NishantPatil",
   "license": "MIT",
   "engines": {
@@ -38,6 +38,10 @@
         "title": "Emacs to Visual Studio Code: Reindent / Untabify (CM)"
       },
       {
+        "command": "emacsTabComplete.goToDefinition",
+        "title": "CM Navigate: Go to Definition"
+      },
+      {
         "command": "emacsTabComplete.listParents",
         "title": "CM Navigate: List Parents"
       },
@@ -56,6 +60,11 @@
     ],
     "menus": {
       "editor/context": [
+        {
+          "command": "emacsTabComplete.goToDefinition",
+          "when": "editorTextFocus && resourceExtname == .cm",
+          "group": "navigation@9"
+        },
         {
           "command": "emacsTabComplete.listClassMethods",
           "when": "editorTextFocus && resourceExtname == .cm",
@@ -115,8 +124,13 @@
         "when": "editorTextFocus && resourceExtname == .cm"
       },
       {
-        "command": "editor.action.revealDefinition",
+        "command": "emacsTabComplete.goToDefinition",
         "key": "alt+.",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.goToDefinition",
+        "key": "ctrl+alt+g",
         "when": "editorTextFocus && resourceExtname == .cm"
       },
       {

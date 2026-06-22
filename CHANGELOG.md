@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4
+
+- Go to Definition no longer triggers on Ctrl+Click / Ctrl+hover. It is now an
+  explicit command (no DefinitionProvider), so the index lookup and progress
+  popup only happen when you press its key: `Alt+.` or `Ctrl+Alt+G` (also in the
+  right-click menu). This reverts the unwanted Ctrl-hover indexing introduced
+  after 1.0.0.
+
 ## 1.0.3
 
 - The navigation index now warms up in the background a few seconds after VS

@@ -1020,23 +1020,44 @@ function classAtCursor(editor, idx) {
   return enclosingClass(ranges, doc.offsetAt(editor.selection.active));
 }
 
-/** Go to Definition: classes and methods resolved from the symbol index. */
-function makeDefinitionProvider() {
-  return {
-    async provideDefinition(document, position) {
-      const wr = document.getWordRangeAtPosition(position, /[A-Za-z_$][\w$]*/);
-      if (!wr) return null;
-      const word = document.getText(wr);
-      const idx = await getSymbolIndexWithProgress();
-      const locs = [];
-      if (idx.classes.has(word)) {
-        const c = idx.classes.get(word);
-        locs.push(locAt(c.uri, c.line));
-      }
-      for (const mi of idx.methodsByName.get(word) || []) locs.push(locAt(mi.uri, mi.line));
-      return locs.length ? locs : null;
-    },
-  };
+/** Open a vscode.Location and place the cursor at its start. */
+async function revealLocation(location) {
+  const doc = await vscode.workspace.openTextDocument(location.uri);
+  const ed = await vscode.window.showTextDocument(doc);
+  ed.selection = new vscode.Selection(location.range.start, location.range.start);
+  ed.revealRange(location.range, vscode.TextEditorRevealType.InCenter);
+}
+
+/**
+ * Go to Definition — an explicit command (not a DefinitionProvider), so it only
+ * runs when its key binding is pressed, never on Ctrl+Click or Ctrl+hover.
+ */
+async function goToDefinition() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isCmDocument(editor.document)) {
+    vscode.window.showInformationMessage('Open a .cm file.');
+    return;
+  }
+  const wr = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z_$][\w$]*/);
+  if (!wr) { vscode.window.showInformationMessage('Put the cursor on a class or method name.'); return; }
+  const word = editor.document.getText(wr);
+  const idx = await getSymbolIndexWithProgress();
+  const items = [];
+  if (idx.classes.has(word)) {
+    const c = idx.classes.get(word);
+    items.push({ label: `class ${word}`, description: relUri(c.uri), location: locAt(c.uri, c.line) });
+  }
+  for (const mi of idx.methodsByName.get(word) || []) {
+    items.push({
+      label: `${word}(${mi.params})`,
+      description: `${mi.returnType}  ·  ${mi.className || '<free>'}`,
+      detail: relUri(mi.uri),
+      location: locAt(mi.uri, mi.line),
+    });
+  }
+  if (items.length === 0) { vscode.window.showInformationMessage(`No definition found for "${word}".`); return; }
+  if (items.length === 1) return revealLocation(items[0].location);
+  return pickAndJump(items, `Definitions of ${word}`);
 }
 
 /** Show a QuickPick of {label, description, detail, location} and jump to it. */
@@ -1044,10 +1065,7 @@ async function pickAndJump(items, placeHolder) {
   if (!items.length) { vscode.window.showInformationMessage('Nothing to show.'); return; }
   const pick = await vscode.window.showQuickPick(items, { placeHolder, matchOnDescription: true, matchOnDetail: true });
   if (!pick || !pick.location) return;
-  const doc = await vscode.workspace.openTextDocument(pick.location.uri);
-  const ed = await vscode.window.showTextDocument(doc);
-  ed.selection = new vscode.Selection(pick.location.range.start, pick.location.range.start);
-  ed.revealRange(pick.location.range, vscode.TextEditorRevealType.InCenter);
+  return revealLocation(pick.location);
 }
 
 const relUri = (uri) => vscode.workspace.asRelativePath(uri);
@@ -1212,8 +1230,9 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument((doc) => {
       if (doc.fileName.endsWith('.cm')) { memberCache = null; symbolIndex = null; methodDescCache = null; }
     }),
-    // CM Navigate: Go to Definition + class-graph browsing.
-    vscode.languages.registerDefinitionProvider(CM_SELECTOR, makeDefinitionProvider()),
+    // CM Navigate: Go to Definition (explicit command, not a Ctrl+Click
+    // provider) + class-graph browsing.
+    vscode.commands.registerCommand('emacsTabComplete.goToDefinition', goToDefinition),
     vscode.commands.registerCommand('emacsTabComplete.listParents', listParents),
     vscode.commands.registerCommand('emacsTabComplete.listSubclasses', listSubclasses),
     vscode.commands.registerCommand('emacsTabComplete.listClassMethods', listClassMethods),
