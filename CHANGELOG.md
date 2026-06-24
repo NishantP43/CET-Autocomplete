@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.0
+
+- **CM syntax highlighting.** Full TextMate grammar: keywords, types, modifiers,
+  class/enum definitions, strings, comments, numbers, CM units (inch, mm, deg),
+  named arguments, preprocessor directives, and CM-specific iterators.
+- **Language configuration.** Auto-closing brackets, Ctrl+/ comment toggling,
+  bracket matching, auto-indent after `{`, code folding on doc comments.
+- **Document outline + breadcrumbs.** Outline panel shows package > class > method
+  hierarchy; breadcrumbs bar shows your position as you navigate.
+- **Hover info.** Hover over a class or method to see its signature, parent class,
+  file location, and method count.
+- **Compiler error parsing.** CM errors from the debug terminal become red squiggles
+  and Problems panel entries, clickable to jump to the exact line.
+- **CM Debug Engine.** PseudoTerminal-backed CM process with stepping (F10 step
+  over, F11 step into, Shift+F11 step out, F5 continue), a Locals sidebar
+  (auto-parsed from source, evaluated via pln()), and a Watch panel for custom
+  expressions.
+- **Visual breakpoints.** F9 toggles red-dot gutter markers; on compile they are
+  sent as inspect() to the CM runtime.
+- **CM runtime commands.** Resume From Error (Ctrl+Alt+Q), Compile Current File
+  (Ctrl+Alt+U), Compile All (Ctrl+Alt+Y), Start C Debugger, Stack Trace/Dump,
+  Inspect at Cursor, Send Custom Command (Ctrl+Alt+M), Request Stop, and
+  Start Dev Process (Ctrl+Alt+F5).
+
 ## 1.0.4
 
 - Go to Definition no longer triggers on Ctrl+Click / Ctrl+hover. It is now an

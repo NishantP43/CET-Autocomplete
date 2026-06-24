@@ -2,7 +2,7 @@
   "name": "emacs-tab-complete",
   "displayName": "Emacs to Visual Studio Code",
   "description": "Emacs-style dabbrev / hippie-expand. Type a prefix, press Tab to complete the word from text already in your buffers, press Tab again to cycle through matches.",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "publisher": "NishantPatil",
   "license": "MIT",
   "engines": {
@@ -24,6 +24,21 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "cm",
+        "aliases": ["CM", "Configura CM"],
+        "extensions": [".cm"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cm",
+        "scopeName": "source.cm",
+        "path": "./syntaxes/cm.tmLanguage.json"
+      }
+    ],
     "commands": [
       {
         "command": "emacsTabComplete.expand",
@@ -40,6 +55,94 @@
       {
         "command": "emacsTabComplete.goToDefinition",
         "title": "CM Navigate: Go to Definition"
+      },
+      {
+        "command": "emacsTabComplete.startCmDev",
+        "title": "CM: Start Dev Process"
+      },
+      {
+        "command": "emacsTabComplete.resumeFromError",
+        "title": "CM: Resume From Error (quit();)"
+      },
+      {
+        "command": "emacsTabComplete.resumeAndClear",
+        "title": "CM: Resume and Clear Drawing (quitAndClear();)"
+      },
+      {
+        "command": "emacsTabComplete.cmCompile",
+        "title": "CM: Compile Current File"
+      },
+      {
+        "command": "emacsTabComplete.cmCompileAll",
+        "title": "CM: Compile All"
+      },
+      {
+        "command": "emacsTabComplete.cmCdb",
+        "title": "CM: Start C Debugger (cdb();)"
+      },
+      {
+        "command": "emacsTabComplete.cmExit",
+        "title": "CM: Stop Compiler Process (exit(0);)"
+      },
+      {
+        "command": "emacsTabComplete.cmStackTrace",
+        "title": "CM: Stack Trace"
+      },
+      {
+        "command": "emacsTabComplete.cmStackDump",
+        "title": "CM: Stack Dump"
+      },
+      {
+        "command": "emacsTabComplete.cmInspect",
+        "title": "CM: Inspect at Cursor"
+      },
+      {
+        "command": "emacsTabComplete.cmSendCustom",
+        "title": "CM: Send Custom Command…"
+      },
+      {
+        "command": "emacsTabComplete.cmRequestStop",
+        "title": "CM: Request Stop (break infinite loop)"
+      },
+      {
+        "command": "emacsTabComplete.toggleBreakpoint",
+        "title": "CM: Toggle Breakpoint"
+      },
+      {
+        "command": "emacsTabComplete.clearAllBreakpoints",
+        "title": "CM: Clear All Breakpoints"
+      },
+      {
+        "command": "emacsTabComplete.startCmDebug",
+        "title": "CM Debug: Start (with stepping & inspection)"
+      },
+      {
+        "command": "emacsTabComplete.cmStepOver",
+        "title": "CM Debug: Step Over"
+      },
+      {
+        "command": "emacsTabComplete.cmStepInto",
+        "title": "CM Debug: Step Into"
+      },
+      {
+        "command": "emacsTabComplete.cmStepOut",
+        "title": "CM Debug: Step Out"
+      },
+      {
+        "command": "emacsTabComplete.cmContinue",
+        "title": "CM Debug: Continue"
+      },
+      {
+        "command": "emacsTabComplete.cmAddWatch",
+        "title": "CM Debug: Add Watch Expression"
+      },
+      {
+        "command": "emacsTabComplete.cmRemoveWatch",
+        "title": "CM Debug: Remove Watch"
+      },
+      {
+        "command": "emacsTabComplete.cmRefreshDebug",
+        "title": "CM Debug: Refresh Locals & Watches"
       },
       {
         "command": "emacsTabComplete.listParents",
@@ -137,8 +240,89 @@
         "command": "workbench.action.navigateBack",
         "key": "ctrl+alt+i",
         "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.startCmDev",
+        "key": "ctrl+alt+f5",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.resumeFromError",
+        "key": "ctrl+alt+q",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.resumeFromError",
+        "key": "ctrl+alt+q",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "emacsTabComplete.cmCompile",
+        "key": "ctrl+alt+u",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmCompileAll",
+        "key": "ctrl+alt+y",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmSendCustom",
+        "key": "ctrl+alt+m",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.toggleBreakpoint",
+        "key": "f9",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmStepOver",
+        "key": "f10",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmStepInto",
+        "key": "f11",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmStepOut",
+        "key": "shift+f11",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.cmContinue",
+        "key": "f5",
+        "when": "editorTextFocus && resourceExtname == .cm"
+      },
+      {
+        "command": "emacsTabComplete.startCmDebug",
+        "key": "ctrl+alt+f5",
+        "when": "editorTextFocus && resourceExtname == .cm"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cmDebugSidebar",
+          "title": "CM Debug",
+          "icon": "$(debug)"
+        }
+      ]
+    },
+    "views": {
+      "cmDebugSidebar": [
+        {
+          "id": "cmLocals",
+          "name": "Locals"
+        },
+        {
+          "id": "cmWatch",
+          "name": "Watch"
+        }
+      ]
+    },
     "configuration": {
       "title": "Emacs to Visual Studio Code",
       "properties": {
@@ -176,6 +360,16 @@
           "type": "number",
           "default": 2000,
           "description": "Maximum number of methods shown in the Ctrl+Tab method picker. The list is narrowed to the word under the cursor (or the current package) first; this caps whatever remains so the picker stays fast."
+        },
+        "emacsTabComplete.cmHome": {
+          "type": "string",
+          "default": "",
+          "description": "Path to CM_HOME / CM_UNIX_HOME (e.g. C:\\CetDev\\version17.0\\home). Used by 'CM: Start Dev Process' to find cmstartdev.cmd. Falls back to the CM_UNIX_HOME or CM_HOME environment variables."
+        },
+        "emacsTabComplete.cmStartCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Custom command to start the CM dev process. Overrides cmHome if set. Example: \"C:\\CetDev\\version17.0\\home\\bin\\cmstartdev.cmd\""
         }
       }
     }
